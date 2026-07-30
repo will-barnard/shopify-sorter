@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Collection Sorting Scheduler</title>
+    <!--
+      App Bridge must be the first script on the page and must be loaded from
+      Shopify's CDN (not bundled) for the embedded app to be accepted.
+      %VITE_SHOPIFY_API_KEY% is replaced at build time by vite's env handling
+      below; see main.js for the runtime guard.
+    -->
+    <script
+      src="https://cdn.shopify.com/shopifycloud/app-bridge.js"
+      data-api-key="%VITE_SHOPIFY_API_KEY%"
+    ></script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
