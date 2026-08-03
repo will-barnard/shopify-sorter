@@ -18,6 +18,19 @@ const MAX_PRODUCTS = 10_000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * MoveInput.newPosition is an UnsignedInt64, which the GraphQL Admin API
+ * requires to be JSON-encoded as a *string*. Sending a JSON number is rejected
+ * with "UnsignedInt64 '5' must be encoded as a string". The planner works in
+ * real numbers; this is the only place that converts, right at the wire.
+ */
+export function toMoveInput({ id, newPosition }) {
+  if (!Number.isInteger(newPosition) || newPosition < 0) {
+    throw new Error(`Invalid newPosition ${newPosition} for ${id}`);
+  }
+  return { id, newPosition: String(newPosition) };
+}
+
 export async function fetchCollectionProducts(client, collectionId) {
   const products = [];
   let cursor = null;
@@ -208,7 +221,7 @@ export async function runRule({ shop, rule, trigger = 'manual', dryRun = false }
       const batch = remaining.slice(0, MOVES_PER_BATCH);
       const payload = await client.mutate(
         REORDER_PRODUCTS,
-        { id: rule.collection_id, moves: batch },
+        { id: rule.collection_id, moves: batch.map(toMoveInput) },
         'collectionReorderProducts'
       );
 

@@ -14,8 +14,15 @@ process.env.APP_URL ||= 'https://example.test';
 
 const { evaluate } = await import('../src/engine/rules.js');
 const { planMoves } = await import('../src/engine/planner.js');
+const { toMoveInput } = await import('../src/engine/runner.js');
 
-/** A stand-in Shopify store that applies moves exactly as documented. */
+/**
+ * A stand-in Shopify store that applies moves exactly as documented, and is as
+ * strict about the wire format as the real Admin API. In particular
+ * MoveInput.newPosition is an UnsignedInt64, which must arrive as a *string*;
+ * a JSON number is rejected. This fake rejects numbers too, so the serialisation
+ * bug that broke the first live run can never come back silently.
+ */
 class FakeShopify {
   constructor(products, sortOrder = 'MANUAL') {
     this.products = products.slice();
@@ -28,13 +35,24 @@ class FakeShopify {
     this.reorderCalls += 1;
     this.movesReceived += moves.length;
     for (const { id, newPosition } of moves) {
+      if (typeof newPosition !== 'string') {
+        throw new Error(
+          `Variable $moves of type [MoveInput!]! was provided invalid value for newPosition ` +
+            `(UnsignedInt64 '${newPosition}' must be encoded as a string)`
+        );
+      }
+      if (!/^\d+$/.test(newPosition)) {
+        throw new Error(`Shopify: newPosition '${newPosition}' is not an unsigned integer`);
+      }
+      const position = Number(newPosition);
+
       const from = this.products.findIndex((p) => p.id === id);
       if (from === -1) throw new Error(`Shopify: unknown product ${id}`);
-      if (newPosition < 0 || newPosition >= this.products.length) {
-        throw new Error(`Shopify: newPosition ${newPosition} out of range`);
+      if (position < 0 || position >= this.products.length) {
+        throw new Error(`Shopify: newPosition ${position} out of range`);
       }
       const [item] = this.products.splice(from, 1);
-      this.products.splice(newPosition, 0, item);
+      this.products.splice(position, 0, item);
     }
   }
 
@@ -54,13 +72,13 @@ const makeProducts = (specs) =>
     priceRangeV2: { minVariantPrice: { amount: String(s.price ?? 10), currencyCode: 'USD' } },
   }));
 
-/** Mirrors runner.js: fetch -> evaluate -> plan -> send -> verify. */
+/** Mirrors runner.js: fetch -> evaluate -> plan -> serialise -> send -> verify. */
 function runAgainst(shopify, strategy) {
   const { order } = evaluate(shopify.products, strategy);
   const currentIds = shopify.ids();
   const targetIds = order.map((p) => p.id);
   const moves = planMoves(currentIds, targetIds);
-  if (moves.length) shopify.reorder(moves);
+  if (moves.length) shopify.reorder(moves.map(toMoveInput));
   return { targetIds, moves };
 }
 
@@ -202,6 +220,39 @@ test('every move sent to Shopify is within range as it is applied', () => {
   const moves = planMoves(shopify.ids(), reversed);
 
   // FakeShopify throws if any newPosition is out of range at apply time.
-  assert.doesNotThrow(() => shopify.reorder(moves));
+  assert.doesNotThrow(() => shopify.reorder(moves.map(toMoveInput)));
   assert.deepEqual(shopify.ids(), reversed);
+});
+
+test('newPosition is serialised as a string, because it is an UnsignedInt64', () => {
+  // Regression: sending a JSON number gets rejected by the Admin API with
+  // "UnsignedInt64 '5' must be encoded as a string".
+  assert.deepEqual(toMoveInput({ id: 'gid://shopify/Product/1', newPosition: 5 }), {
+    id: 'gid://shopify/Product/1',
+    newPosition: '5',
+  });
+
+  assert.deepEqual(toMoveInput({ id: 'gid://shopify/Product/2', newPosition: 0 }), {
+    id: 'gid://shopify/Product/2',
+    newPosition: '0',
+  });
+});
+
+test('toMoveInput rejects values the API would reject', () => {
+  for (const bad of [-1, 1.5, NaN, Infinity, null, undefined, '3']) {
+    assert.throws(
+      () => toMoveInput({ id: 'gid://shopify/Product/1', newPosition: bad }),
+      /Invalid newPosition/,
+      `should reject ${String(bad)}`
+    );
+  }
+});
+
+test('the fake rejects raw planner output, proving the guard is live', () => {
+  const shopify = new FakeShopify(makeProducts([{}, {}, {}]));
+  const moves = planMoves(shopify.ids(), shopify.ids().slice().reverse());
+
+  // Passing planner moves straight through (numbers) must fail the same way
+  // the real API failed.
+  assert.throws(() => shopify.reorder(moves), /must be encoded as a string/);
 });
