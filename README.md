@@ -39,7 +39,7 @@ The rule editor has a **Preview changes** button that reads the collection and s
    - **Allowed redirection URL(s)**: `https://your-app.example.com/auth/callback`
 4. Under **Configuration → Embedded app**, make sure the app is set to embed in the Shopify admin.
 
-The requested scopes are `read_products,write_products`. Reordering a collection requires `write_products`.
+The requested scopes are `read_products,write_products,read_inventory`. Reordering a collection requires `write_products`; the [lead-time notice](#lead-time-notice) needs `read_inventory` to receive stock-change webhooks. If you set `SHOPIFY_SCOPES` as a Beachhead variable, include it there too.
 
 ### 2. Deploy on Beachhead
 
@@ -155,10 +155,27 @@ All `/api` routes require `Authorization: Bearer <session token>`.
 | `POST` | `/api/rules/:id/run` | run now |
 | `POST` | `/api/preview` | dry run, changes nothing |
 | `GET` | `/api/runs?ruleId=` | run history |
+| `GET` / `PUT` | `/api/lead-time` | lead-time settings, scope status, recent changes |
+| `POST` | `/api/lead-time/preview` | dry run of the nightly sweep, works while off |
+| `POST` | `/api/lead-time/run` | sweep now (409 unless enabled) |
 
 `GET /healthz` is unauthenticated.
 
 ---
+
+## Lead-time notice
+
+For special-order stock (for example the Mellotrons). Products carrying a tag (default `special-order`) get a bold first paragraph in their **description** while every variant is out of stock but can still be ordered (continue selling when out of stock), and lose it when stock arrives. It lives in the description itself rather than in theme code so it also reaches Reverb, eBay and anything else that syncs the description.
+
+- **Trigger:** Shopify's `inventory_levels/update` webhook, plus a nightly sweep at each store's local time (default 04:00) and a sweep 30 seconds after boot, so missed webhooks self-heal.
+- **Rule:** the notice shows only when *no* variant is in stock. With one colour in stock and another out, the shared description shows no notice (it would mislead the in-stock buyer). Sold out with selling denied also shows none.
+- **Safe to repeat:** the notice is found by its visible text, not hidden markup, so a hand-typed copy is adopted instead of duplicated, and a write only happens when the description actually changes.
+- **Never touched:** untagged products, products tagged `restoration` (their disclaimer must stay first), products with over 100 variants.
+- **Off by default.** Use *Preview changes* in the panel (a dry run that works while the notice is off), then turn it on.
+- **Needs `read_inventory`.** Shopify won't deliver inventory webhooks without it. Existing installs have to re-authorise once; the panel shows a button when the stored token lacks it. At boot the app registers the webhook for existing shops that already have the scope.
+- **Changing the wording** keeps the old sentence in `legacy_notices`, so existing descriptions are rewritten rather than stacking two notices.
+
+Only real changes and errors are logged (`lead_time_events`, pruned after 90 days); a "checked, nothing to do" event is not.
 
 ## Known limits
 

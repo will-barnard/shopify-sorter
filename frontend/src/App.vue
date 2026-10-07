@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue';
 import { api, redirectToAuth, shopFromLocation, ApiError } from './lib/api.js';
 import RuleEditor from './components/RuleEditor.vue';
 import RunHistory from './components/RunHistory.vue';
+import LeadTimePanel from './components/LeadTimePanel.vue';
 
 const booting = ref(true);
 const fatal = ref('');
@@ -218,6 +219,8 @@ const activeCount = computed(() => rules.value.filter((r) => r.enabled).length);
           </div>
         </div>
       </div>
+
+      <LeadTimePanel />
 
       <RunHistory ref="historyRef" />
 

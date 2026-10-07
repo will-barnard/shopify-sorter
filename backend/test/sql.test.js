@@ -288,3 +288,75 @@ test('marking a shop uninstalled also pauses its rules', async () => {
   const row = await db.row(`SELECT enabled FROM rules WHERE id=$1`, [rule.id]);
   assert.equal(row.enabled, false);
 });
+
+test('lead-time settings upsert, legacy notices round-trip, and events list newest first', async () => {
+  const db = await freshDb();
+  const { shop } = await seed(db);
+
+  const upsert = (enabled, notice, legacy) =>
+    db.row(
+      `INSERT INTO lead_time_settings (shop_id, enabled, tag, notice_text, sweep_at, legacy_notices, updated_at)
+       VALUES ($1,$2,'special-order',$3,'04:00',$4,now())
+       ON CONFLICT (shop_id) DO UPDATE SET
+         enabled = EXCLUDED.enabled, tag = EXCLUDED.tag, notice_text = EXCLUDED.notice_text,
+         sweep_at = EXCLUDED.sweep_at, legacy_notices = EXCLUDED.legacy_notices, updated_at = now()
+       RETURNING *`,
+      [shop.id, enabled, notice, JSON.stringify(legacy)]
+    );
+
+  const defaults = await db.row(`INSERT INTO lead_time_settings (shop_id) VALUES ($1) RETURNING *`, [shop.id]);
+  assert.equal(defaults.enabled, false, 'off until a merchant turns it on');
+  assert.equal(defaults.tag, 'special-order');
+  assert.deepEqual(defaults.legacy_notices, []);
+
+  const saved = await upsert(true, 'New wording.', ['Old wording.']);
+  assert.equal(saved.enabled, true);
+  assert.deepEqual(saved.legacy_notices, ['Old wording.']);
+  assert.equal(await db.count('SELECT 1 FROM lead_time_settings'), 1);
+
+  for (const action of ['added', 'removed']) {
+    await db.rows(
+      `INSERT INTO lead_time_events (shop_id, product_id, product_title, trigger, action, message)
+       VALUES ($1,'gid://shopify/Product/1','Mellotron M4000D','webhook',$2,NULL)`,
+      [shop.id, action]
+    );
+  }
+  const events = await db.rows(
+    `SELECT * FROM lead_time_events WHERE shop_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2`,
+    [shop.id, 50]
+  );
+  assert.deepEqual(events.map((e) => e.action), ['removed', 'added']);
+});
+
+test('lead-time nightly claim is taken exactly once per shop per day', async () => {
+  const db = await freshDb();
+  const { shop } = await seed(db);
+  // pg-mem misreports rowCount/RETURNING for DO NOTHING (see the scheduler_claims
+  // test above), so assert on the rows left behind instead.
+  const claim = (slot) =>
+    db.rows(
+      `INSERT INTO lead_time_claims (shop_id, slot) VALUES ($1,$2) ON CONFLICT (shop_id, slot) DO NOTHING`,
+      [shop.id, slot]
+    );
+  const slots = async () => (await db.rows(`SELECT slot FROM lead_time_claims WHERE shop_id=$1`, [shop.id])).length;
+  await claim('2026-10-08T04:00');
+  await claim('2026-10-08T04:00');
+  assert.equal(await slots(), 1, 'the second replica adds nothing');
+  await claim('2026-10-09T04:00');
+  assert.equal(await slots(), 2, 'next day is a new slot');
+});
+
+test('deleting a shop removes its lead-time rows', async () => {
+  const db = await freshDb();
+  const { shop } = await seed(db);
+  await db.rows(`INSERT INTO lead_time_settings (shop_id) VALUES ($1)`, [shop.id]);
+  await db.rows(
+    `INSERT INTO lead_time_events (shop_id, product_id, trigger, action) VALUES ($1,'p','webhook','added')`,
+    [shop.id]
+  );
+  await db.rows(`INSERT INTO lead_time_claims (shop_id, slot) VALUES ($1,'s')`, [shop.id]);
+  await db.rows(`DELETE FROM shops WHERE id = $1`, [shop.id]);
+  assert.equal(await db.count('SELECT 1 FROM lead_time_settings'), 0);
+  assert.equal(await db.count('SELECT 1 FROM lead_time_events'), 0);
+  assert.equal(await db.count('SELECT 1 FROM lead_time_claims'), 0);
+});

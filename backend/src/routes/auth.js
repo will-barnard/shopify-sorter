@@ -2,8 +2,9 @@ import express from 'express';
 import { config, scopeString } from '../config.js';
 import { normalizeShop, verifyOAuthHmac, randomToken } from '../shopify/verify.js';
 import { AdminClient, ShopifyError } from '../shopify/client.js';
-import { SHOP_INFO, CREATE_WEBHOOK } from '../shopify/queries.js';
+import { SHOP_INFO } from '../shopify/queries.js';
 import { upsertShop } from '../shopify/shops.js';
+import { registerWebhooks } from '../shopify/webhookSetup.js';
 
 export const authRouter = express.Router();
 
@@ -91,7 +92,7 @@ authRouter.get('/auth/callback', async (req, res) => {
       ianaTimezone: shopInfo?.ianaTimezone,
     });
 
-    await registerWebhooks(client);
+    await registerWebhooks(client, scope);
 
     // Land the merchant back inside the embedded admin.
     res.redirect(`https://${shop}/admin/apps/${config.apiKey}`);
@@ -100,24 +101,3 @@ authRouter.get('/auth/callback', async (req, res) => {
     res.status(500).send(`Installation failed: ${err.message}`);
   }
 });
-
-async function registerWebhooks(client) {
-  const topics = [
-    ['APP_UNINSTALLED', `${config.appUrl}/webhooks/app/uninstalled`],
-    ['SHOP_REDACT', `${config.appUrl}/webhooks/shop/redact`],
-  ];
-
-  for (const [topic, callbackUrl] of topics) {
-    try {
-      await client.mutate(
-        CREATE_WEBHOOK,
-        { topic, sub: { callbackUrl, format: 'JSON' } },
-        'webhookSubscriptionCreate'
-      );
-    } catch (err) {
-      // Re-registering an existing subscription is a userError, not a failure.
-      if (/already exists|taken/i.test(err.message)) continue;
-      console.warn(`[auth] webhook ${topic} registration failed:`, err.message);
-    }
-  }
-}

@@ -5,7 +5,8 @@ import { migrate, pool } from './db.js';
 import { authRouter } from './routes/auth.js';
 import { apiRouter } from './routes/api.js';
 import { webhookRouter } from './routes/webhooks.js';
-import { startScheduler, stopScheduler } from './scheduler.js';
+import { startScheduler, stopScheduler, scheduleBootLeadTimeSweep } from './scheduler.js';
+import { ensureWebhooksForAllShops } from './shopify/webhookSetup.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -32,8 +33,13 @@ const server = app.listen(config.port, '0.0.0.0', async () => {
   console.log(`[server] listening on :${config.port} (Admin API ${config.apiVersion})`);
   try {
     await migrate();
-    if (config.schedulerEnabled) startScheduler();
-    else console.log('[scheduler] disabled by SCHEDULER_ENABLED=false');
+    // Installs that predate a webhook topic never registered it; do it here, not
+    // only at OAuth. Failures are logged per shop and never block startup.
+    ensureWebhooksForAllShops().catch((err) => console.error('[server] webhook ensure failed', err));
+    if (config.schedulerEnabled) {
+      startScheduler();
+      scheduleBootLeadTimeSweep();
+    } else console.log('[scheduler] disabled by SCHEDULER_ENABLED=false');
   } catch (err) {
     console.error('[server] startup failed', err);
     process.exit(1);

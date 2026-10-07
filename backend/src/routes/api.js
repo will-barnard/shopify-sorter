@@ -7,6 +7,16 @@ import { LIST_COLLECTIONS, COLLECTION_HEADER, PRODUCT_TAGS } from '../shopify/qu
 import { fetchCollectionProducts, runRule } from '../engine/runner.js';
 import { validateStrategy, describeStrategy, evaluate, BASE_ORDERS } from '../engine/rules.js';
 import { isValidZone, normalizeTime } from '../scheduler.js';
+import {
+  DEFAULT_SETTINGS,
+  enqueueForShop,
+  getSettings,
+  parseSettings,
+  recentEvents,
+  saveSettings,
+  sweepShop,
+} from '../engine/leadTimeRunner.js';
+import { SCOPE_FOR_INVENTORY, hasScope } from '../shopify/webhookSetup.js';
 
 export const apiRouter = express.Router();
 apiRouter.use(express.json({ limit: '256kb' }));
@@ -345,6 +355,62 @@ apiRouter.get(
         details: r.details,
       })),
     });
+  })
+);
+
+// ---- lead-time notice ------------------------------------------------------
+
+apiRouter.get(
+  '/lead-time',
+  asyncRoute(async (req, res) => {
+    res.json({
+      settings: await getSettings(req.shop.id),
+      defaults: { tag: DEFAULT_SETTINGS.tag, noticeText: DEFAULT_SETTINGS.noticeText, sweepAt: DEFAULT_SETTINGS.sweepAt },
+      // Without read_inventory Shopify won't deliver inventory webhooks, so the
+      // feature would look enabled yet never fire. The UI surfaces this.
+      scopeOk: hasScope(req.shop.scope, SCOPE_FOR_INVENTORY),
+      requiredScope: SCOPE_FOR_INVENTORY,
+      events: await recentEvents(req.shop.id),
+    });
+  })
+);
+
+apiRouter.put(
+  '/lead-time',
+  asyncRoute(async (req, res) => {
+    const current = await getSettings(req.shop.id);
+    const next = parseSettings(req.body, current);
+    res.json({ settings: await saveSettings(req.shop.id, next) });
+  })
+);
+
+/**
+ * Dry run: what a sweep would change right now. Works while disabled, and uses
+ * the body's tag/noticeText when given so an edit can be previewed before saving.
+ */
+apiRouter.post(
+  '/lead-time/preview',
+  asyncRoute(async (req, res) => {
+    const current = await getSettings(req.shop.id);
+    const settings = parseSettings({ ...req.body, enabled: current.enabled }, current);
+    const summary = await enqueueForShop(req.shop.domain, () =>
+      sweepShop({ shop: req.shop, settings, dryRun: true, trigger: 'preview' })
+    );
+    res.json({ summary });
+  })
+);
+
+apiRouter.post(
+  '/lead-time/run',
+  asyncRoute(async (req, res) => {
+    const settings = await getSettings(req.shop.id);
+    if (!settings.enabled) {
+      return res.status(409).json({ error: 'Turn the notice on first. Use Preview to see what it would change.' });
+    }
+    const summary = await enqueueForShop(req.shop.domain, () =>
+      sweepShop({ shop: req.shop, settings, trigger: 'manual' })
+    );
+    res.json({ summary });
   })
 );
 

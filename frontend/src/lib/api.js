@@ -107,6 +107,11 @@ export const api = {
   runRule: (id) => apiFetch(`/rules/${id}/run`, { method: 'POST' }),
   preview: (collectionId, strategy) =>
     apiFetch('/preview', { method: 'POST', body: JSON.stringify({ collectionId, strategy }) }),
+  leadTime: () => apiFetch('/lead-time'),
+  saveLeadTime: (settings) => apiFetch('/lead-time', { method: 'PUT', body: JSON.stringify(settings) }),
+  previewLeadTime: (settings) =>
+    apiFetch('/lead-time/preview', { method: 'POST', body: JSON.stringify(settings) }),
+  runLeadTime: () => apiFetch('/lead-time/run', { method: 'POST' }),
   runs: (ruleId = null) => apiFetch(`/runs${ruleId ? `?ruleId=${ruleId}` : ''}`),
 };
 

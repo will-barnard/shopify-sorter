@@ -10,7 +10,7 @@ export const config = {
   apiKey: required('SHOPIFY_API_KEY'),
   apiSecret: required('SHOPIFY_API_SECRET'),
   apiVersion: process.env.SHOPIFY_API_VERSION || '2026-07',
-  scopes: (process.env.SHOPIFY_SCOPES || 'read_products,write_products')
+  scopes: (process.env.SHOPIFY_SCOPES || 'read_products,write_products,read_inventory')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),

@@ -88,6 +88,42 @@ CREATE TABLE IF NOT EXISTS scheduler_claims (
   claimed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (rule_id, slot)
 );
+
+-- Lead-time notice (see engine/leadTime.js). One settings row per shop; the
+-- notice is OFF until a merchant enables it. legacy_notices holds earlier
+-- wordings so editing the text replaces the old sentence instead of stacking.
+CREATE TABLE IF NOT EXISTS lead_time_settings (
+  shop_id        BIGINT PRIMARY KEY REFERENCES shops(id) ON DELETE CASCADE,
+  enabled        BOOLEAN NOT NULL DEFAULT FALSE,
+  tag            TEXT NOT NULL DEFAULT 'special-order',
+  notice_text    TEXT NOT NULL DEFAULT 'Please allow 1-3 weeks for shipping at this time, thank you!',
+  sweep_at       TEXT NOT NULL DEFAULT '04:00',
+  legacy_notices JSONB NOT NULL DEFAULT '[]'::jsonb,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Only real changes (and errors) are logged, never "checked, nothing to do".
+-- Every inventory movement in the shop reaches the webhook; logging them all
+-- would bury the few rows that matter.
+CREATE TABLE IF NOT EXISTS lead_time_events (
+  id            BIGSERIAL PRIMARY KEY,
+  shop_id       BIGINT NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+  product_id    TEXT NOT NULL,
+  product_title TEXT NOT NULL DEFAULT '',
+  trigger       TEXT NOT NULL,
+  action        TEXT NOT NULL,
+  message       TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS lead_time_events_shop_idx ON lead_time_events(shop_id, created_at DESC);
+
+-- Same double-run guard as scheduler_claims, keyed by shop for the nightly sweep.
+CREATE TABLE IF NOT EXISTS lead_time_claims (
+  shop_id    BIGINT NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+  slot       TEXT NOT NULL,
+  claimed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (shop_id, slot)
+);
 `;
 
 export async function migrate() {

@@ -1,6 +1,8 @@
 import { DateTime } from 'luxon';
 import { query } from './db.js';
 import { runRule } from './engine/runner.js';
+import { enqueueForShop, getSettings, sweepShop, sweepAllEnabledShops } from './engine/leadTimeRunner.js';
+import { clientForShop } from './shopify/shops.js';
 
 /**
  * Ticks once a minute. A rule fires when the current wall-clock time in the
@@ -19,8 +21,10 @@ export function startScheduler() {
   const tick = () => {
     if (running) return;
     running = true;
-    runDueRules()
-      .catch((err) => console.error('[scheduler] tick failed', err))
+    Promise.all([
+      runDueRules().catch((err) => console.error('[scheduler] tick failed', err)),
+      runDueLeadTimeSweeps().catch((err) => console.error('[scheduler] lead-time tick failed', err)),
+    ])
       .finally(() => {
         running = false;
       });
@@ -39,6 +43,53 @@ export function startScheduler() {
 export function stopScheduler() {
   if (timer) clearInterval(timer);
   timer = null;
+}
+
+/**
+ * Boot sweep: webhooks missed while the app was down or deploying are caught up
+ * shortly after start. Delayed so it never competes with startup. Safe on every
+ * replica — the sweep only writes when a description actually differs.
+ */
+export function scheduleBootLeadTimeSweep(delayMs = 30_000) {
+  const t = setTimeout(() => {
+    sweepAllEnabledShops('boot').catch((err) => console.error('[lead-time] boot sweep failed', err));
+  }, delayMs);
+  t.unref();
+}
+
+/** Nightly lead-time sweep, at each shop's own local sweep_at, claimed once per day. */
+export async function runDueLeadTimeSweeps(now = new Date()) {
+  await query(`DELETE FROM lead_time_claims WHERE claimed_at < now() - interval '7 days'`).catch(() => {});
+  await query(`DELETE FROM lead_time_events WHERE created_at < now() - interval '90 days'`).catch(() => {});
+
+  const { rows } = await query(
+    `SELECT s.id, s.domain, s.access_token, s.iana_timezone, l.sweep_at
+       FROM lead_time_settings l JOIN shops s ON s.id = l.shop_id
+      WHERE l.enabled = TRUE AND s.uninstalled_at IS NULL`
+  );
+
+  for (const row of rows) {
+    const zone = isValidZone(row.iana_timezone) ? row.iana_timezone : 'UTC';
+    const local = DateTime.fromJSDate(now, { zone });
+    const hhmm = local.toFormat('HH:mm');
+    if (hhmm !== normalizeTime(row.sweep_at)) continue;
+
+    const slot = `${local.toFormat('yyyy-LL-dd')}T${hhmm}`;
+    const { rowCount } = await query(
+      `INSERT INTO lead_time_claims (shop_id, slot) VALUES ($1,$2) ON CONFLICT (shop_id, slot) DO NOTHING`,
+      [row.id, slot]
+    );
+    if (!rowCount) continue;
+
+    // Not awaited: one slow shop must not hold up the minute tick.
+    enqueueForShop(row.domain, async () => {
+      const settings = await getSettings(row.id);
+      if (!settings.enabled) return;
+      const shop = { id: row.id, domain: row.domain, access_token: row.access_token };
+      const s = await sweepShop({ shop, settings, trigger: 'sweep' });
+      console.log(`[lead-time] ${row.domain} nightly: ${s.checked} checked, ${s.changed} changed, ${s.errors} errors`);
+    }).catch((err) => console.error(`[lead-time] ${row.domain} nightly sweep failed:`, err.message));
+  }
 }
 
 export async function runDueRules(now = new Date()) {

@@ -1,6 +1,7 @@
 import express from 'express';
 import { verifyWebhookHmac, normalizeShop } from '../shopify/verify.js';
 import { markUninstalled } from '../shopify/shops.js';
+import { onInventoryWebhook } from '../engine/leadTimeRunner.js';
 
 export const webhookRouter = express.Router();
 
@@ -31,6 +32,18 @@ webhookRouter.post('/app/uninstalled', async (req, res) => {
   } catch (err) {
     console.error('[webhook] uninstall handling failed', err);
   }
+});
+
+// Indirection so tests can observe the event without a database or Shopify.
+export const hooks = { inventory: onInventoryWebhook };
+
+webhookRouter.post('/inventory_levels/update', (req, res) => {
+  // Ack first: the handler makes a Shopify call, and a slow ack makes Shopify retry.
+  res.status(200).send('ok');
+  if (!req.shopDomain) return;
+  Promise.resolve(hooks.inventory(req.shopDomain, req.payload)).catch((err) =>
+    console.error('[webhook] inventory handling failed', err)
+  );
 });
 
 webhookRouter.post('/shop/redact', (req, res) => res.status(200).send('ok'));

@@ -166,3 +166,103 @@ export const CREATE_WEBHOOK = /* GraphQL */ `
     }
   }
 `;
+
+// ---- Lead-time notice ------------------------------------------------------
+// One fragment shared by every lookup so a webhook event costs a single call:
+// inventory item -> variant -> product, with the variants and description the
+// decision needs. 100 variants is Shopify's per-page cap; a product with more is
+// skipped by the runner rather than judged on a partial view.
+const LEAD_TIME_PRODUCT = /* GraphQL */ `
+  fragment LeadTimeProduct on Product {
+    id
+    title
+    status
+    tags
+    descriptionHtml
+    variants(first: 100) {
+      pageInfo {
+        hasNextPage
+      }
+      nodes {
+        id
+        title
+        inventoryQuantity
+        inventoryPolicy
+        inventoryItem {
+          tracked
+        }
+      }
+    }
+  }
+`;
+
+export const LEAD_TIME_PRODUCT_BY_ITEM = /* GraphQL */ `
+  query LeadTimeProductByInventoryItem($id: ID!) {
+    inventoryItem(id: $id) {
+      id
+      variants(first: 1) {
+        nodes {
+          product {
+            ...LeadTimeProduct
+          }
+        }
+      }
+    }
+  }
+  ${LEAD_TIME_PRODUCT}
+`;
+
+// InventoryItem.variant is deprecated in favour of .variants. The runner tries
+// the new field first and only falls back to this on an undefined-field error,
+// so an older pinned API version keeps working.
+export const LEAD_TIME_PRODUCT_BY_ITEM_LEGACY = /* GraphQL */ `
+  query LeadTimeProductByInventoryItemLegacy($id: ID!) {
+    inventoryItem(id: $id) {
+      id
+      variant {
+        product {
+          ...LeadTimeProduct
+        }
+      }
+    }
+  }
+  ${LEAD_TIME_PRODUCT}
+`;
+
+export const LEAD_TIME_PRODUCT_STATE = /* GraphQL */ `
+  query LeadTimeProductState($id: ID!) {
+    product(id: $id) {
+      ...LeadTimeProduct
+    }
+  }
+  ${LEAD_TIME_PRODUCT}
+`;
+
+export const LEAD_TIME_PRODUCTS_BY_TAG = /* GraphQL */ `
+  query LeadTimeProductsByTag($cursor: String, $query: String!) {
+    products(first: 100, after: $cursor, query: $query) {
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        id
+      }
+    }
+  }
+`;
+
+export const LEAD_TIME_SET_DESCRIPTION = /* GraphQL */ `
+  mutation LeadTimeSetDescription($product: ProductUpdateInput!) {
+    productUpdate(product: $product) {
+      product {
+        id
+        descriptionHtml
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
